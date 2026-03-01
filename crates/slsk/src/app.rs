@@ -1,5 +1,7 @@
 use ratatui::widgets::ListState;
 
+use crate::events::NetCommand;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
     Search,
@@ -30,7 +32,6 @@ impl ActiveTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum DownloadStatus {
     Queued,
     InProgress { downloaded: u64, total: u64 },
@@ -48,7 +49,9 @@ impl std::fmt::Display for DownloadStatus {
                 } else {
                     0
                 };
-                write!(f, "{pct}%  ({downloaded}/{total} B)")
+                let dl_kb = downloaded / 1024;
+                let tot_kb = total / 1024;
+                write!(f, "{pct}%  ({dl_kb}/{tot_kb} KB)")
             }
             Self::Done => write!(f, "Done"),
             Self::Failed(reason) => write!(f, "Failed: {reason}"),
@@ -68,10 +71,19 @@ pub struct SearchResult {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Download {
+    /// Stable identifier used to match progress events.
+    pub id: usize,
     pub username: String,
     pub filename: String,
     pub size: u64,
     pub status: DownloadStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginStatus {
+    Connecting,
+    LoggedIn,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +98,12 @@ pub struct App {
     pub active_tab: ActiveTab,
     pub exit: bool,
 
+    // Network
+    pub login_status: LoginStatus,
+    pub net_tx: tokio::sync::mpsc::UnboundedSender<NetCommand>,
+    pub search_token_counter: u32,
+    pub current_search_token: Option<u32>,
+
     // Search tab state
     pub search_input: String,
     pub search_input_mode: SearchInputMode,
@@ -95,6 +113,7 @@ pub struct App {
 
     // Downloads tab state
     pub downloads: Vec<Download>,
+    pub download_id_counter: usize,
     pub download_list_state: ListState,
 
     // Log pane
@@ -103,7 +122,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(net_tx: tokio::sync::mpsc::UnboundedSender<NetCommand>) -> Self {
         let mut search_list_state = ListState::default();
         search_list_state.select(None);
 
@@ -113,16 +132,21 @@ impl App {
         Self {
             active_tab: ActiveTab::Search,
             exit: false,
+            login_status: LoginStatus::Connecting,
+            net_tx,
+            search_token_counter: 1,
+            current_search_token: None,
             search_input: String::new(),
             search_input_mode: SearchInputMode::Normal,
             search_results: Vec::new(),
             search_list_state,
             selected_for_download: Vec::new(),
             downloads: Vec::new(),
+            download_id_counter: 0,
             download_list_state,
             log_messages: vec![
                 "Welcome to slsk-rs — a Soulseek TUI client.".into(),
-                "Press '/' to start a search, Tab to switch tabs.".into(),
+                "Connecting to the Soulseek network…".into(),
             ],
             log_scroll: 0,
         }
@@ -130,9 +154,98 @@ impl App {
 
     pub fn push_log(&mut self, msg: impl Into<String>) {
         self.log_messages.push(msg.into());
-        // Keep log from growing unbounded
         if self.log_messages.len() > 500 {
             self.log_messages.drain(0..100);
+        }
+    }
+
+    // ── Network helpers ───────────────────────────────────────────────────────
+
+    /// Issue a real search over the network.
+    pub fn send_search(&mut self, query: String) {
+        let token = self.search_token_counter;
+        self.search_token_counter = self.search_token_counter.wrapping_add(1);
+        self.current_search_token = Some(token);
+        self.search_results.clear();
+        self.search_list_state.select(None);
+        self.selected_for_download.clear();
+
+        let _ = self.net_tx.send(NetCommand::Search { token, query });
+    }
+
+    /// Enqueue all selected results as real downloads.
+    pub fn enqueue_selected_downloads(&mut self) {
+        if self.selected_for_download.is_empty() {
+            self.push_log("No files selected for download.");
+            return;
+        }
+
+        let indices: Vec<usize> = self.selected_for_download.drain(..).collect();
+        let mut count = 0;
+
+        for idx in indices {
+            let Some(result) = self.search_results.get(idx) else {
+                continue;
+            };
+
+            let id = self.download_id_counter;
+            self.download_id_counter += 1;
+
+            self.downloads.push(Download {
+                id,
+                username: result.username.clone(),
+                filename: result.filename.clone(),
+                size: result.size,
+                status: DownloadStatus::Queued,
+            });
+
+            let _ = self.net_tx.send(NetCommand::Download {
+                id,
+                username: result.username.clone(),
+                filename: result.filename.clone(),
+                size: result.size,
+            });
+
+            count += 1;
+        }
+
+        if self.download_list_state.selected().is_none() && !self.downloads.is_empty() {
+            self.download_list_state.select(Some(0));
+        }
+
+        if count > 0 {
+            self.push_log(format!("Enqueued {count} file(s) for download."));
+        }
+    }
+
+    // ── Network event handlers ────────────────────────────────────────────────
+
+    pub fn on_search_results(&mut self, token: u32, results: Vec<SearchResult>) {
+        if Some(token) != self.current_search_token {
+            return;
+        }
+        let prev_len = self.search_results.len();
+        self.search_results.extend(results);
+        if prev_len == 0 && !self.search_results.is_empty() {
+            self.search_list_state.select(Some(0));
+        }
+    }
+
+    pub fn on_download_progress(&mut self, id: usize, downloaded: u64, total: u64) {
+        if let Some(dl) = self.downloads.iter_mut().find(|d| d.id == id) {
+            dl.status = DownloadStatus::InProgress { downloaded, total };
+        }
+    }
+
+    pub fn on_download_done(&mut self, id: usize) {
+        if let Some(dl) = self.downloads.iter_mut().find(|d| d.id == id) {
+            dl.status = DownloadStatus::Done;
+        }
+    }
+
+    pub fn on_download_failed(&mut self, id: usize, reason: String) {
+        if let Some(dl) = self.downloads.iter_mut().find(|d| d.id == id) {
+            dl.status = DownloadStatus::Failed(reason);
         }
     }
 
@@ -161,7 +274,6 @@ impl App {
         self.search_list_state.select(Some(i));
     }
 
-    /// Toggle the currently highlighted result in/out of the download queue.
     pub fn toggle_selected_for_download(&mut self) {
         let Some(idx) = self.search_list_state.selected() else {
             return;
@@ -174,41 +286,6 @@ impl App {
             self.selected_for_download.push(idx);
             let filename = self.search_results[idx].filename.clone();
             self.push_log(format!("Queued for download: {filename}"));
-        }
-    }
-
-    /// Move all selected results to the downloads list.
-    pub fn enqueue_selected_downloads(&mut self) {
-        if self.selected_for_download.is_empty() {
-            self.push_log("No files selected for download.");
-            return;
-        }
-        let mut count = 0;
-        for &idx in &self.selected_for_download {
-            if let Some(result) = self.search_results.get(idx) {
-                self.downloads.push(Download {
-                    username: result.username.clone(),
-                    filename: result.filename.clone(),
-                    size: result.size,
-                    status: DownloadStatus::Queued,
-                });
-                count += 1;
-            }
-        }
-        self.selected_for_download.clear();
-        if self.download_list_state.selected().is_none() && !self.downloads.is_empty() {
-            self.download_list_state.select(Some(0));
-        }
-        self.push_log(format!("Enqueued {count} file(s) for download."));
-    }
-
-    pub fn set_search_results(&mut self, results: Vec<SearchResult>) {
-        self.search_results = results;
-        self.selected_for_download.clear();
-        if self.search_results.is_empty() {
-            self.search_list_state.select(None);
-        } else {
-            self.search_list_state.select(Some(0));
         }
     }
 

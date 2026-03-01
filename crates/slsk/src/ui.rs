@@ -9,7 +9,7 @@ use ratatui::{
     },
 };
 
-use crate::app::{ActiveTab, App, DownloadStatus, SearchInputMode};
+use crate::app::{ActiveTab, App, DownloadStatus, LoginStatus, SearchInputMode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [tabs_area, content_area, log_area] = Layout::vertical([
@@ -29,11 +29,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
+    let (status_text, status_color) = match app.login_status {
+        LoginStatus::Connecting => ("⧖ Connecting", Color::Yellow),
+        LoginStatus::LoggedIn => ("● Online", Color::Green),
+        LoginStatus::Failed => ("✗ Login failed", Color::Red),
+    };
+
     let titles = ["Search", "Downloads"];
     let tabs = Tabs::new(titles)
         .block(
             Block::bordered()
-                .title(" slsk-rs ".bold())
+                .title(Line::from(vec![
+                    " slsk-rs  ".bold(),
+                    Span::styled(status_text, Style::default().fg(status_color)),
+                    " ".into(),
+                ]))
                 .title_bottom(
                     Line::from(vec![
                         " Tab ".into(),
