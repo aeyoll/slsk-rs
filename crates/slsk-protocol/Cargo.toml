@@ -1,0 +1,21 @@
+[package]
+name = "slsk-protocol"
+version = { workspace = true }
+edition = "2024"
+description = "A Rust implementation of the Soulseek P2P file sharing protocol"
+license = "MIT"
+
+[dependencies]
+# Serialization
+bytes = "1"
+# Compression (zlib for shared file lists etc.)
+flate2 = "1"
+# Async networking
+tokio = { version = "1", features = ["full"] }
+# Error handling
+thiserror = "1"
+# MD5 for login hash
+md5 = "0.7"
+
+[dev-dependencies]
+tokio-test = "0.4"
