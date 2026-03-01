@@ -1,0 +1,14 @@
+[package]
+name = "slsk"
+version = { workspace = true }
+edition = "2024"
+description = "A Rust client for the Soulseek P2P file sharing network"
+license = "MIT"
+
+[dependencies]
+color-eyre = "0.6.5"
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+slsk-protocol = { path = "../slsk-protocol" }
+tokio = { version = "1", features = ["full"] }
+unicode-width = "0.2"
