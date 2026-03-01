@@ -123,6 +123,9 @@ fn handle_app_event(app: &mut App, ev: AppEvent) {
             app.on_download_failed(id, format!("denied: {reason}"));
             app.push_log(format!("Transfer denied (id={id}): {reason}"));
         }
+        AppEvent::QueuePosition { id, position } => {
+            app.on_queue_position(id, position);
+        }
         AppEvent::Log(msg) => {
             app.push_log(msg);
         }

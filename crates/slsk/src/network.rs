@@ -29,7 +29,7 @@ use slsk_protocol::{
     server::{
         ConnectToPeerRequest, FileSearchRequest, LoginRequest, ServerMessage, SetWaitPort,
     },
-    types::TransferDirection,
+    types::{FileAttributeType, TransferDirection},
 };
 
 use crate::{
@@ -252,11 +252,36 @@ async fn run_inner(
             // Search results from peer tasks
             Some(resp) = peer_rx.recv() => {
                 if Some(resp.token) == current_search_token {
-                    let results: Vec<SearchResult> = resp.results.iter().map(|r| SearchResult {
-                        username: resp.username.clone(),
-                        filename: r.filename.clone(),
-                        size: r.size,
-                        extension: r.extension.clone(),
+                    let results: Vec<SearchResult> = resp.results.iter().map(|r| {
+                        let mut bitrate = None;
+                        let mut is_vbr = false;
+                        let mut duration = None;
+                        let mut sample_rate = None;
+                        let mut bit_depth = None;
+                        for attr in &r.attributes {
+                            match attr.code {
+                                FileAttributeType::Bitrate => bitrate = Some(attr.value),
+                                FileAttributeType::Vbr => is_vbr = attr.value != 0,
+                                FileAttributeType::Duration => duration = Some(attr.value),
+                                FileAttributeType::SampleRate => sample_rate = Some(attr.value),
+                                FileAttributeType::BitDepth => bit_depth = Some(attr.value),
+                                _ => {}
+                            }
+                        }
+                        SearchResult {
+                            username: resp.username.clone(),
+                            filename: r.filename.clone(),
+                            size: r.size,
+                            extension: r.extension.clone(),
+                            slot_free: resp.slot_free,
+                            avg_speed: resp.avg_speed,
+                            queue_length: resp.queue_length,
+                            bitrate,
+                            is_vbr,
+                            duration,
+                            sample_rate,
+                            bit_depth,
+                        }
                     }).collect();
                     if !results.is_empty() {
                         let _ = ui_tx.send(AppEvent::SearchResults {
@@ -407,7 +432,7 @@ async fn handle_peer_messages(
             Ok(PeerMessage::UploadDenied(d)) => {
                 let mut guard = pending.lock().await;
                 if let Some((&tok, dl)) =
-                    guard.iter().find(|(_, d)| d.filename == d.filename)
+                    guard.iter().find(|(_, dl)| dl.filename == d.filename)
                 {
                     let _ = ui_tx.send(AppEvent::TransferDenied {
                         id: dl.id,
@@ -417,9 +442,15 @@ async fn handle_peer_messages(
                 }
             }
 
-            // Peer wants us to download a file — queue the upload from their
-            // perspective.  We respond by opening an F connection.
-            Ok(PeerMessage::PlaceInQueueResponse(_)) => {}
+            Ok(PeerMessage::PlaceInQueueResponse(piq)) => {
+                let guard = pending.lock().await;
+                if let Some(dl) = guard.values().find(|dl| dl.filename == piq.filename) {
+                    let _ = ui_tx.send(AppEvent::QueuePosition {
+                        id: dl.id,
+                        position: piq.place,
+                    });
+                }
+            }
 
             Ok(_) => {}
 

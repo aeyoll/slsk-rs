@@ -114,20 +114,102 @@ fn render_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
         .search_results
         .iter()
         .enumerate()
-        .map(|(i, result)| {
+        .map(|(i, r)| {
             let is_queued = app.selected_for_download.contains(&i);
-            let mark = if is_queued { "[x] " } else { "[ ] " };
-            let size_kb = result.size / 1024;
-            let label = format!(
-                "{mark}{} — {} ({size_kb} KB)",
-                result.username, result.filename
-            );
-            let style = if is_queued {
-                Style::default().fg(Color::Green)
+
+            // ── Row 1: checkbox + filename ─────────────────────────────────
+            let mark_span = if is_queued {
+                Span::styled("[x] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
             } else {
-                Style::default().fg(Color::White)
+                Span::styled("[ ] ", Style::default().fg(Color::DarkGray))
             };
-            ListItem::new(label).style(style)
+
+            let filename = r.filename.rsplit(['/', '\\']).next().unwrap_or(&r.filename);
+            let filename_style = if is_queued {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            };
+
+            let row1 = Line::from(vec![
+                mark_span,
+                Span::styled(filename, filename_style),
+            ]);
+
+            // ── Row 2: metadata ────────────────────────────────────────────
+            let size_mb = r.size as f64 / (1024.0 * 1024.0);
+            let speed_kbps = r.avg_speed / 1024;
+
+            // Bitrate / format
+            let audio_info = match (r.bitrate, r.sample_rate, r.bit_depth) {
+                (Some(br), Some(sr), Some(bd)) => {
+                    let vbr = if r.is_vbr { " VBR" } else { "" };
+                    format!("{br} kbps{vbr} · {sr} Hz · {bd}-bit")
+                }
+                (Some(br), Some(sr), None) => {
+                    let vbr = if r.is_vbr { " VBR" } else { "" };
+                    format!("{br} kbps{vbr} · {sr} Hz")
+                }
+                (Some(br), None, None) => {
+                    let vbr = if r.is_vbr { " VBR" } else { "" };
+                    format!("{br} kbps{vbr}")
+                }
+                _ => String::new(),
+            };
+
+            // Duration
+            let dur_str = r.duration.map(|s| {
+                if s >= 3600 {
+                    format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+                } else {
+                    format!("{}:{:02}", s / 60, s % 60)
+                }
+            });
+
+            // Slot / queue
+            let (slot_text, slot_color) = if r.slot_free {
+                ("▶ ready", Color::Green)
+            } else if r.queue_length == 0 {
+                ("▶ ready", Color::Green)
+            } else {
+                let s = format!("⧖ queue: {}", r.queue_length);
+                (Box::leak(s.into_boxed_str()) as &str, Color::Yellow)
+            };
+
+            let mut meta_spans: Vec<Span> = vec![
+                Span::raw("    "),
+                Span::styled(
+                    format!("{:.1} MB", size_mb),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ];
+            if !audio_info.is_empty() {
+                meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
+                meta_spans.push(Span::styled(audio_info, Style::default().fg(Color::Magenta)));
+            }
+            if let Some(d) = dur_str {
+                meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
+                meta_spans.push(Span::styled(d, Style::default().fg(Color::Blue)));
+            }
+            meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
+            meta_spans.push(Span::styled(
+                format!("{speed_kbps} KB/s"),
+                Style::default().fg(Color::Cyan),
+            ));
+            meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
+            meta_spans.push(Span::styled(
+                slot_text,
+                Style::default().fg(slot_color),
+            ));
+            meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
+            meta_spans.push(Span::styled(
+                r.username.as_str(),
+                Style::default().fg(Color::DarkGray),
+            ));
+
+            let row2 = Line::from(meta_spans);
+
+            ListItem::new(Text::from(vec![row1, row2]))
         })
         .collect();
 
@@ -140,12 +222,7 @@ fn render_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let list = List::new(items)
         .block(Block::bordered().title(title))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().bg(Color::DarkGray))
         .highlight_symbol("▶ ");
 
     frame.render_stateful_widget(list, area, &mut app.search_list_state);
@@ -196,6 +273,7 @@ fn render_download_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|dl| {
             let status_style = match &dl.status {
                 DownloadStatus::Queued => Style::default().fg(Color::Yellow),
+                DownloadStatus::PeerQueued { .. } => Style::default().fg(Color::Yellow),
                 DownloadStatus::InProgress { .. } => Style::default().fg(Color::Cyan),
                 DownloadStatus::Done => Style::default().fg(Color::Green),
                 DownloadStatus::Failed(_) => Style::default().fg(Color::Red),

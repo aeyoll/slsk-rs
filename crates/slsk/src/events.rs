@@ -24,6 +24,8 @@ pub enum AppEvent {
     DownloadFailed { id: usize, reason: String },
     /// A peer connection was rejected or the peer queue-denied the transfer.
     TransferDenied { id: usize, reason: String },
+    /// Our position in the peer's upload queue was updated.
+    QueuePosition { id: usize, position: u32 },
     /// Generic log message from the network layer.
     Log(String),
 }

@@ -33,7 +33,10 @@ impl ActiveTab {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadStatus {
+    /// Waiting for the peer to become available.
     Queued,
+    /// Peer has us in their queue; we know our position.
+    PeerQueued { position: u32 },
     InProgress { downloaded: u64, total: u64 },
     Done,
     Failed(String),
@@ -43,6 +46,7 @@ impl std::fmt::Display for DownloadStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Queued => write!(f, "Queued"),
+            Self::PeerQueued { position } => write!(f, "In queue — position {position}"),
             Self::InProgress { downloaded, total } => {
                 let pct = if *total > 0 {
                     (*downloaded as f64 / *total as f64 * 100.0) as u64
@@ -66,6 +70,22 @@ pub struct SearchResult {
     pub filename: String,
     pub size: u64,
     pub extension: String,
+    /// Upload slot available immediately.
+    pub slot_free: bool,
+    /// Peer's average upload speed in B/s.
+    pub avg_speed: u32,
+    /// Number of uploads already queued on the peer.
+    pub queue_length: u32,
+    /// Bitrate in kbps (from file attributes), if present.
+    pub bitrate: Option<u32>,
+    /// Variable bitrate flag, if present.
+    pub is_vbr: bool,
+    /// Duration in seconds, if present.
+    pub duration: Option<u32>,
+    /// Sample rate in Hz, if present.
+    pub sample_rate: Option<u32>,
+    /// Bit depth, if present.
+    pub bit_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +266,12 @@ impl App {
     pub fn on_download_failed(&mut self, id: usize, reason: String) {
         if let Some(dl) = self.downloads.iter_mut().find(|d| d.id == id) {
             dl.status = DownloadStatus::Failed(reason);
+        }
+    }
+
+    pub fn on_queue_position(&mut self, id: usize, position: u32) {
+        if let Some(dl) = self.downloads.iter_mut().find(|d| d.id == id) {
+            dl.status = DownloadStatus::PeerQueued { position };
         }
     }
 
