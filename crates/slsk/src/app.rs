@@ -36,8 +36,13 @@ pub enum DownloadStatus {
     /// Waiting for the peer to become available.
     Queued,
     /// Peer has us in their queue; we know our position.
-    PeerQueued { position: u32 },
-    InProgress { downloaded: u64, total: u64 },
+    PeerQueued {
+        position: u32,
+    },
+    InProgress {
+        downloaded: u64,
+        total: u64,
+    },
     Done,
     Failed(String),
 }

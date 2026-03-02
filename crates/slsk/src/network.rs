@@ -105,11 +105,15 @@ async fn run_inner(
 
     match server.recv().await? {
         ServerMessage::Login(slsk_protocol::server::LoginResponse::Success { greet, .. }) => {
-            let _ = ui_tx.send(AppEvent::LoginOk { greet: greet.clone() });
+            let _ = ui_tx.send(AppEvent::LoginOk {
+                greet: greet.clone(),
+            });
             let _ = ui_tx.send(AppEvent::Log(format!("Login OK: {greet}")));
         }
         ServerMessage::Login(slsk_protocol::server::LoginResponse::Failure { reason, .. }) => {
-            let _ = ui_tx.send(AppEvent::LoginFailed { reason: reason.clone() });
+            let _ = ui_tx.send(AppEvent::LoginFailed {
+                reason: reason.clone(),
+            });
             let _ = ui_tx.send(AppEvent::Log(format!("Login FAILED: {reason}")));
             return Ok(());
         }
@@ -119,17 +123,21 @@ async fn run_inner(
         }
     }
 
-    server.send_raw(&SetWaitPort::new(LISTEN_PORT as u32).encode()).await?;
+    server
+        .send_raw(&SetWaitPort::new(LISTEN_PORT as u32).encode())
+        .await?;
 
     // ── TCP listener for inbound peer connections ─────────────────────────────
 
     let listen_addr: SocketAddr = format!("0.0.0.0:{LISTEN_PORT}").parse().unwrap();
     let listener = TcpListener::bind(listen_addr).await?;
-    let _ = ui_tx.send(AppEvent::Log(format!("Listening for peers on port {LISTEN_PORT}")));
+    let _ = ui_tx.send(AppEvent::Log(format!(
+        "Listening for peers on port {LISTEN_PORT}"
+    )));
 
     // Three lookup tables for pending downloads (see type aliases above).
-    let by_ctp:      ByCtpToken      = Arc::new(Mutex::new(HashMap::new()));
-    let by_username: ByUsername      = Arc::new(Mutex::new(HashMap::new()));
+    let by_ctp: ByCtpToken = Arc::new(Mutex::new(HashMap::new()));
+    let by_username: ByUsername = Arc::new(Mutex::new(HashMap::new()));
     let by_transfer: ByTransferToken = Arc::new(Mutex::new(HashMap::new()));
 
     // Maps our CTP token → peer username, for CantConnectToPeer fallback.
@@ -142,30 +150,38 @@ async fn run_inner(
 
     // Spawn the inbound acceptor.
     {
-        let peer_tx      = peer_tx.clone();
-        let by_ctp       = by_ctp.clone();
-        let by_username  = by_username.clone();
-        let by_transfer  = by_transfer.clone();
-        let ui_tx        = ui_tx.clone();
+        let peer_tx = peer_tx.clone();
+        let by_ctp = by_ctp.clone();
+        let by_username = by_username.clone();
+        let by_transfer = by_transfer.clone();
+        let ui_tx = ui_tx.clone();
         let download_dir = download_dir.clone();
         let our_username = username.clone();
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((stream, addr)) => {
-                        let peer_tx      = peer_tx.clone();
-                        let by_ctp       = by_ctp.clone();
-                        let by_username  = by_username.clone();
-                        let by_transfer  = by_transfer.clone();
-                        let ui_tx        = ui_tx.clone();
-                        let dd           = download_dir.clone();
+                        let peer_tx = peer_tx.clone();
+                        let by_ctp = by_ctp.clone();
+                        let by_username = by_username.clone();
+                        let by_transfer = by_transfer.clone();
+                        let ui_tx = ui_tx.clone();
+                        let dd = download_dir.clone();
                         let our_username = our_username.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_inbound(
-                                stream, addr,
-                                peer_tx, by_ctp, by_username, by_transfer,
-                                ui_tx, dd, our_username,
-                            ).await {
+                                stream,
+                                addr,
+                                peer_tx,
+                                by_ctp,
+                                by_username,
+                                by_transfer,
+                                ui_tx,
+                                dd,
+                                our_username,
+                            )
+                            .await
+                            {
                                 let _ = e;
                             }
                         });
@@ -441,20 +457,22 @@ async fn handle_inbound(
             )));
             match init.conn_type.as_str() {
                 "P" => {
-                    let downloads = by_username.lock().await
+                    let downloads = by_username
+                        .lock()
+                        .await
                         .remove(&init.username)
                         .unwrap_or_default();
                     let _ = ui_tx.send(AppEvent::Log(format!(
                         "Inbound PeerInit P from {}: {} download(s)",
-                        init.username, downloads.len()
+                        init.username,
+                        downloads.len()
                     )));
                     let mut peer_conn = init_conn.into_peer_connection();
                     if downloads.is_empty() {
                         read_search_results(&mut peer_conn, &peer_tx).await;
                     } else {
-                        let _ = download_p_session(
-                            &mut peer_conn, downloads, &by_transfer, &ui_tx,
-                        ).await;
+                        let _ = download_p_session(&mut peer_conn, downloads, &by_transfer, &ui_tx)
+                            .await;
                     }
                 }
                 "F" => {
@@ -471,7 +489,9 @@ async fn handle_inbound(
             let first_dl = by_ctp.lock().await.remove(&pf.token);
             let downloads = if let Some(first) = first_dl {
                 // Drain all remaining queued downloads for this peer.
-                let mut rest = by_username.lock().await
+                let mut rest = by_username
+                    .lock()
+                    .await
                     .remove(&first.username)
                     .unwrap_or_default();
                 // Exclude the one we already have from by_ctp to avoid duplicates.
@@ -484,7 +504,8 @@ async fn handle_inbound(
             };
             let _ = ui_tx.send(AppEvent::Log(format!(
                 "Inbound PierceFirewall from {addr}: token={} download(s)={}",
-                pf.token, downloads.len()
+                pf.token,
+                downloads.len()
             )));
 
             // Reply with PierceFirewall so the peer knows the handshake is
@@ -496,9 +517,7 @@ async fn handle_inbound(
             if downloads.is_empty() {
                 read_search_results(&mut peer_conn, &peer_tx).await;
             } else {
-                let _ = download_p_session(
-                    &mut peer_conn, downloads, &by_transfer, &ui_tx,
-                ).await;
+                let _ = download_p_session(&mut peer_conn, downloads, &by_transfer, &ui_tx).await;
             }
         }
     }
@@ -519,13 +538,10 @@ async fn outbound_p_connect(
     download_dir: PathBuf,
     our_username: String,
 ) -> anyhow::Result<()> {
-    let stream = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        TcpStream::connect(addr),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("TCP connect timeout to {addr}"))?
-    .map_err(|e| anyhow::anyhow!("TCP connect to {addr}: {e}"))?;
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("TCP connect timeout to {addr}"))?
+        .map_err(|e| anyhow::anyhow!("TCP connect to {addr}: {e}"))?;
 
     let mut init_conn = PeerInitConnection::from_stream(stream);
     let peer_init = PeerInit::new(&our_username, "P");
@@ -535,7 +551,9 @@ async fn outbound_p_connect(
 
     // Atomically drain the entire download queue for this peer so that no
     // other concurrently spawned task can steal entries.
-    let downloads = by_username.lock().await
+    let downloads = by_username
+        .lock()
+        .await
         .remove(peer_username)
         .unwrap_or_default();
 
@@ -563,13 +581,10 @@ async fn outbound_f_connect(
     ui_tx: UnboundedSender<AppEvent>,
     download_dir: PathBuf,
 ) -> anyhow::Result<()> {
-    let stream = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        TcpStream::connect(addr),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("F-connect timeout to {addr}"))?
-    .map_err(|e| anyhow::anyhow!("F-connect to {addr}: {e}"))?;
+    let stream = tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow::anyhow!("F-connect timeout to {addr}"))?
+        .map_err(|e| anyhow::anyhow!("F-connect to {addr}: {e}"))?;
 
     let mut init_conn = PeerInitConnection::from_stream(stream);
 
@@ -600,9 +615,14 @@ async fn download_p_session(
 ) -> anyhow::Result<()> {
     // Send QueueUpload for every file at once.
     for dl in &downloads {
-        let qu = QueueUpload { filename: dl.filename.clone() };
+        let qu = QueueUpload {
+            filename: dl.filename.clone(),
+        };
         peer_conn.send_raw(&qu.encode()).await?;
-        let _ = ui_tx.send(AppEvent::Log(format!("QueueUpload sent: '{}'", dl.filename)));
+        let _ = ui_tx.send(AppEvent::Log(format!(
+            "QueueUpload sent: '{}'",
+            dl.filename
+        )));
     }
 
     // Build a lookup map so we can match TransferRequest/UploadDenied by filename.
@@ -620,7 +640,8 @@ async fn download_p_session(
         match peer_conn.recv().await {
             Ok(PeerMessage::PlaceInQueueResponse(piq)) => {
                 // Match against a known filename; fall back to the first entry.
-                let dl = by_filename.get(&piq.filename)
+                let dl = by_filename
+                    .get(&piq.filename)
                     .or_else(|| by_filename.values().next());
                 if let Some(dl) = dl {
                     let _ = ui_tx.send(AppEvent::QueuePosition {
@@ -634,24 +655,31 @@ async fn download_p_session(
                 }
             }
 
-            Ok(PeerMessage::TransferRequest(req))
-                if req.direction == TransferDirection::Upload =>
-            {
+            Ok(PeerMessage::TransferRequest(req)) if req.direction == TransferDirection::Upload => {
                 let transfer_token = req.token;
 
                 // Match by filename, falling back to first entry if not found.
-                let dl = by_filename.remove(&req.filename)
-                    .or_else(|| by_filename.keys().next().cloned().and_then(|k| by_filename.remove(&k)));
+                let dl = by_filename.remove(&req.filename).or_else(|| {
+                    by_filename
+                        .keys()
+                        .next()
+                        .cloned()
+                        .and_then(|k| by_filename.remove(&k))
+                });
 
                 let Some(dl) = dl else {
                     // Unknown transfer; accept anyway so the connection stays alive.
-                    let resp = TransferResponse::UploadAllowed { token: transfer_token };
+                    let resp = TransferResponse::UploadAllowed {
+                        token: transfer_token,
+                    };
                     let _ = peer_conn.send_raw(&resp.encode()).await;
                     continue;
                 };
 
                 let file_size = req.file_size.unwrap_or(dl.size);
-                let resp = TransferResponse::UploadAllowed { token: transfer_token };
+                let resp = TransferResponse::UploadAllowed {
+                    token: transfer_token,
+                };
                 peer_conn.send_raw(&resp.encode()).await?;
 
                 let _ = ui_tx.send(AppEvent::Log(format!(
@@ -672,7 +700,11 @@ async fn download_p_session(
 
             Ok(PeerMessage::UploadDenied(d)) => {
                 if let Some(dl) = by_filename.remove(&d.filename).or_else(|| {
-                    by_filename.keys().next().cloned().and_then(|k| by_filename.remove(&k))
+                    by_filename
+                        .keys()
+                        .next()
+                        .cloned()
+                        .and_then(|k| by_filename.remove(&k))
                 }) {
                     let _ = ui_tx.send(AppEvent::TransferDenied {
                         id: dl.id,
@@ -721,7 +753,9 @@ async fn receive_file(
     download_dir: &PathBuf,
 ) -> anyhow::Result<()> {
     let token = downloader_handshake(stream, 0).await?;
-    let _ = ui_tx.send(AppEvent::Log(format!("F-connection: transfer token={token}")));
+    let _ = ui_tx.send(AppEvent::Log(format!(
+        "F-connection: transfer token={token}"
+    )));
 
     let dl = by_transfer.lock().await.remove(&token);
 
@@ -732,7 +766,11 @@ async fn receive_file(
         return Ok(());
     };
 
-    let basename = dl.filename.rsplit(['/', '\\']).next().unwrap_or(&dl.filename);
+    let basename = dl
+        .filename
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&dl.filename);
     let dest = download_dir.join(basename);
     let _ = ui_tx.send(AppEvent::Log(format!("Receiving '{basename}'…")));
 

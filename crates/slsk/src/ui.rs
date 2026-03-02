@@ -4,8 +4,8 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState, Tabs, Wrap,
+        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Tabs, Wrap,
     },
 };
 
@@ -86,15 +86,14 @@ fn render_search_input(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Cyan),
             " Search (editing — Enter to search, Esc to cancel) ",
         ),
-        SearchInputMode::Normal => (Style::default().fg(Color::DarkGray), " Search (press / to type) "),
+        SearchInputMode::Normal => (
+            Style::default().fg(Color::DarkGray),
+            " Search (press / to type) ",
+        ),
     };
 
     let input = Paragraph::new(app.search_input.as_str())
-        .block(
-            Block::bordered()
-                .title(title)
-                .border_style(border_style),
-        )
+        .block(Block::bordered().title(title).border_style(border_style))
         .style(Style::default().fg(Color::White));
 
     frame.render_widget(input, area);
@@ -119,22 +118,28 @@ fn render_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
 
             // ── Row 1: checkbox + filename ─────────────────────────────────
             let mark_span = if is_queued {
-                Span::styled("[x] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    "[x] ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::styled("[ ] ", Style::default().fg(Color::DarkGray))
             };
 
             let filename = r.filename.rsplit(['/', '\\']).next().unwrap_or(&r.filename);
             let filename_style = if is_queued {
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             };
 
-            let row1 = Line::from(vec![
-                mark_span,
-                Span::styled(filename, filename_style),
-            ]);
+            let row1 = Line::from(vec![mark_span, Span::styled(filename, filename_style)]);
 
             // ── Row 2: metadata ────────────────────────────────────────────
             let size_mb = r.size as f64 / (1024.0 * 1024.0);
@@ -185,7 +190,10 @@ fn render_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
             ];
             if !audio_info.is_empty() {
                 meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
-                meta_spans.push(Span::styled(audio_info, Style::default().fg(Color::Magenta)));
+                meta_spans.push(Span::styled(
+                    audio_info,
+                    Style::default().fg(Color::Magenta),
+                ));
             }
             if let Some(d) = dur_str {
                 meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
@@ -197,10 +205,7 @@ fn render_search_results(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::Cyan),
             ));
             meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
-            meta_spans.push(Span::styled(
-                slot_text,
-                Style::default().fg(slot_color),
-            ));
+            meta_spans.push(Span::styled(slot_text, Style::default().fg(slot_color)));
             meta_spans.push(Span::styled("  ·  ", Style::default().fg(Color::DarkGray)));
             meta_spans.push(Span::styled(
                 r.username.as_str(),
@@ -232,21 +237,51 @@ fn render_search_hints(frame: &mut Frame, app: &App, area: Rect) {
     let hints = match app.search_input_mode {
         SearchInputMode::Normal => {
             vec![
-                Span::styled("/", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "/",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" search  "),
-                Span::styled("↑↓ / j k", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "↑↓ / j k",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" navigate  "),
-                Span::styled("Space", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Space",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" toggle  "),
-                Span::styled("Enter", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" download selected"),
             ]
         }
         SearchInputMode::Editing => {
             vec![
-                Span::styled("Enter", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Enter",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" confirm  "),
-                Span::styled("Esc", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Esc",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" cancel"),
             ]
         }
@@ -256,11 +291,8 @@ fn render_search_hints(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_downloads_tab(frame: &mut Frame, app: &mut App, area: Rect) {
-    let [list_area, hints_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [list_area, hints_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
 
     render_download_list(frame, app, list_area);
     render_download_hints(frame, hints_area);
@@ -312,9 +344,19 @@ fn render_download_list(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_download_hints(frame: &mut Frame, area: Rect) {
     let hints = vec![
-        Span::styled("↑↓ / j k", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "↑↓ / j k",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" navigate  "),
-        Span::styled("d", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "d",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" remove selected"),
     ];
     frame.render_widget(Paragraph::new(Line::from(hints)), area);
@@ -349,7 +391,8 @@ fn render_log(frame: &mut Frame, app: &mut App, area: Rect) {
 
     if total > log_height {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(max_scroll - app.log_scroll as usize);
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll).position(max_scroll - app.log_scroll as usize);
         frame.render_stateful_widget(
             scrollbar,
             area.inner(Margin {

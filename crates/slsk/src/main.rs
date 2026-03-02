@@ -106,7 +106,11 @@ fn handle_app_event(app: &mut App, ev: AppEvent) {
                 app.search_results.len()
             ));
         }
-        AppEvent::DownloadProgress { id, downloaded, total } => {
+        AppEvent::DownloadProgress {
+            id,
+            downloaded,
+            total,
+        } => {
             app.on_download_progress(id, downloaded, total);
         }
         AppEvent::DownloadDone { id } => {
