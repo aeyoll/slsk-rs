@@ -46,6 +46,7 @@ const LISTEN_PORT: u16 = 2234;
 #[derive(Debug, Clone)]
 struct PendingDownload {
     id: usize,
+    username: String,
     filename: String,
     size: u64,
 }
@@ -58,7 +59,9 @@ type ByCtpToken = Arc<Mutex<HashMap<u32, PendingDownload>>>;
 
 /// Keyed by peer username. Used when the server sends *us* a ConnectToPeer
 /// (c.token is the *peer's* token, not ours) — we match by username instead.
-type ByUsername = Arc<Mutex<HashMap<String, PendingDownload>>>;
+/// A single P-connection can serve multiple queued files from the same peer,
+/// so we keep a Vec and pop the first entry each time.
+type ByUsername = Arc<Mutex<HashMap<String, Vec<PendingDownload>>>>;
 
 /// Keyed by the transfer token that appears inside the F-connection handshake
 /// (set by the peer in their TransferRequest). Populated once we accept a
@@ -197,11 +200,11 @@ async fn run_inner(
                     NetCommand::Download { id, username: peer, filename, size } => {
                         let ctp_tok = ctp_token_counter.fetch_add(1, Ordering::Relaxed) as u32;
 
-                        let dl = PendingDownload { id, filename: filename.clone(), size };
+                        let dl = PendingDownload { id, username: peer.clone(), filename: filename.clone(), size };
 
                         // Register under all lookup tables.
                         by_ctp.lock().await.insert(ctp_tok, dl.clone());
-                        by_username.lock().await.insert(peer.clone(), dl);
+                        by_username.lock().await.entry(peer.clone()).or_default().push(dl);
                         ctp_to_peer.lock().await.insert(ctp_tok, peer.clone());
 
                         let _ = ui_tx.send(AppEvent::Log(
@@ -225,34 +228,44 @@ async fn run_inner(
                     // Server tells us to connect to the peer directly.
                     // c.token is the PEER's token, not ours — match by username.
                     Ok(ServerMessage::ConnectToPeer(c)) if c.conn_type == "P" => {
-                        let dl = by_username.lock().await.get(&c.username).cloned();
+                        let queue_len = by_username.lock().await
+                            .get(&c.username)
+                            .map(|q| q.len())
+                            .unwrap_or(0);
                         let _ = ui_tx.send(AppEvent::Log(format!(
-                            "ConnectToPeer → {} {}:{} (is_download={})",
+                            "ConnectToPeer P → {} {}:{} (pending={})",
                             c.username,
                             Ipv4Addr::from(c.ip.to_be_bytes()),
                             c.port,
-                            dl.is_some()
+                            queue_len,
                         )));
 
-                        let peer_tx      = peer_tx.clone();
-                        let by_transfer  = by_transfer.clone();
-                        let by_username  = by_username.clone();
-                        let ui_tx        = ui_tx.clone();
-                        let dd           = download_dir.clone();
-                        let our_username = username.clone();
-                        tokio::spawn(async move {
-                            let ip = Ipv4Addr::from(c.ip.to_be_bytes());
-                            let addr: SocketAddr = format!("{ip}:{}", c.port).parse().unwrap();
-                            if let Err(e) = outbound_p_connect(
-                                addr, &c.username, dl,
-                                peer_tx, by_username, by_transfer,
-                                ui_tx.clone(), dd, our_username,
-                            ).await {
-                                let _ = ui_tx.send(AppEvent::Log(
-                                    format!("Outbound connect error to {}: {e}", c.username)
-                                ));
-                            }
-                        });
+                        // Always spawn a task: it reads search results when queue_len==0,
+                        // or drains all queued downloads when queue_len>0.
+                        // For downloads: later duplicate CTP responses (one per extra file
+                        // requested to the same peer) will find an empty queue and become
+                        // harmless read_search_results tasks.
+                        {
+                            let peer_tx      = peer_tx.clone();
+                            let by_transfer  = by_transfer.clone();
+                            let by_username  = by_username.clone();
+                            let ui_tx        = ui_tx.clone();
+                            let dd           = download_dir.clone();
+                            let our_username = username.clone();
+                            tokio::spawn(async move {
+                                let ip = Ipv4Addr::from(c.ip.to_be_bytes());
+                                let addr: SocketAddr = format!("{ip}:{}", c.port).parse().unwrap();
+                                if let Err(e) = outbound_p_connect(
+                                    addr, &c.username,
+                                    peer_tx, by_username, by_transfer,
+                                    ui_tx.clone(), dd, our_username,
+                                ).await {
+                                    let _ = ui_tx.send(AppEvent::Log(
+                                        format!("Outbound connect error to {}: {e}", c.username)
+                                    ));
+                                }
+                            });
+                        }
                     }
                     Ok(ServerMessage::ConnectToPeer(c)) if c.conn_type == "F" => {
                         let ip = Ipv4Addr::from(c.ip.to_be_bytes());
@@ -282,6 +295,8 @@ async fn run_inner(
                     }
 
                     // Server couldn't broker the connection — try GetPeerAddress fallback.
+                    // We deduplicate: only issue GetPeerAddress once per peer, not once
+                    // per CTP token, so that N queued files don't cause N parallel connects.
                     Ok(ServerMessage::CantConnectToPeer(cant)) => {
                         let peer = ctp_to_peer.lock().await.remove(&cant.token);
                         let _ = ui_tx.send(AppEvent::Log(format!(
@@ -289,28 +304,40 @@ async fn run_inner(
                             cant.token, peer
                         )));
                         if let Some(peer_name) = peer {
-                            let req = GetPeerAddressRequest { username: peer_name };
-                            if let Err(e) = server.send_raw(&req.encode()).await {
-                                let _ = ui_tx.send(AppEvent::Log(format!("GetPeerAddress error: {e}")));
+                            // Only send GetPeerAddress if this peer still has pending
+                            // downloads (i.e. no other CTP response already claimed them).
+                            let has_pending = by_username.lock().await
+                                .get(&peer_name)
+                                .map(|q| !q.is_empty())
+                                .unwrap_or(false);
+                            if has_pending {
+                                let req = GetPeerAddressRequest { username: peer_name };
+                                if let Err(e) = server.send_raw(&req.encode()).await {
+                                    let _ = ui_tx.send(AppEvent::Log(format!("GetPeerAddress error: {e}")));
+                                }
                             }
                         }
                     }
 
                     // GetPeerAddress response — attempt a cold direct connect.
+                    // Drain the entire queue for this peer so one connection handles all files.
                     Ok(ServerMessage::GetPeerAddress(a)) => {
-                        let dl = by_username.lock().await.get(&a.username).cloned();
+                        let queue_len = by_username.lock().await
+                            .get(&a.username)
+                            .map(|q| q.len())
+                            .unwrap_or(0);
                         let _ = ui_tx.send(AppEvent::Log(format!(
-                            "GetPeerAddress → {} {}:{} (is_download={})",
+                            "GetPeerAddress → {} {}:{} (pending={})",
                             a.username,
                             Ipv4Addr::from(a.ip.to_be_bytes()),
                             a.port,
-                            dl.is_some()
+                            queue_len,
                         )));
                         if a.port == 0 {
                             let _ = ui_tx.send(AppEvent::Log(format!(
                                 "Peer {} is unreachable (port=0)", a.username
                             )));
-                        } else {
+                        } else if queue_len > 0 {
                             let peer_tx      = peer_tx.clone();
                             let by_transfer  = by_transfer.clone();
                             let by_username  = by_username.clone();
@@ -321,7 +348,7 @@ async fn run_inner(
                                 let ip = Ipv4Addr::from(a.ip.to_be_bytes());
                                 let addr: SocketAddr = format!("{ip}:{}", a.port).parse().unwrap();
                                 if let Err(e) = outbound_p_connect(
-                                    addr, &a.username, dl,
+                                    addr, &a.username,
                                     peer_tx, by_username, by_transfer,
                                     ui_tx.clone(), dd, our_username,
                                 ).await {
@@ -414,18 +441,20 @@ async fn handle_inbound(
             )));
             match init.conn_type.as_str() {
                 "P" => {
-                    let dl = by_username.lock().await.remove(&init.username);
+                    let downloads = by_username.lock().await
+                        .remove(&init.username)
+                        .unwrap_or_default();
                     let _ = ui_tx.send(AppEvent::Log(format!(
-                        "Inbound PeerInit P from {}: download={}",
-                        init.username, dl.is_some()
+                        "Inbound PeerInit P from {}: {} download(s)",
+                        init.username, downloads.len()
                     )));
                     let mut peer_conn = init_conn.into_peer_connection();
-                    if let Some(dl) = dl {
-                        let _ = download_p_session(
-                            &mut peer_conn, dl, &by_transfer, &ui_tx,
-                        ).await;
-                    } else {
+                    if downloads.is_empty() {
                         read_search_results(&mut peer_conn, &peer_tx).await;
+                    } else {
+                        let _ = download_p_session(
+                            &mut peer_conn, downloads, &by_transfer, &ui_tx,
+                        ).await;
                     }
                 }
                 "F" => {
@@ -437,11 +466,25 @@ async fn handle_inbound(
         }
         PeerInitMessage::PierceFirewall(pf) => {
             // pf.token == the CTP token we sent in our ConnectToPeerRequest.
-            // Look it up to decide if this is a download connection.
-            let dl = by_ctp.lock().await.remove(&pf.token);
+            // Look it up to decide if this is a download connection, then drain
+            // all remaining pending downloads for this peer from by_username.
+            let first_dl = by_ctp.lock().await.remove(&pf.token);
+            let downloads = if let Some(first) = first_dl {
+                // Drain all remaining queued downloads for this peer.
+                let mut rest = by_username.lock().await
+                    .remove(&first.username)
+                    .unwrap_or_default();
+                // Exclude the one we already have from by_ctp to avoid duplicates.
+                rest.retain(|d| d.id != first.id);
+                let mut all = vec![first];
+                all.append(&mut rest);
+                all
+            } else {
+                Vec::new()
+            };
             let _ = ui_tx.send(AppEvent::Log(format!(
-                "Inbound PierceFirewall from {addr}: token={} download={}",
-                pf.token, dl.is_some()
+                "Inbound PierceFirewall from {addr}: token={} download(s)={}",
+                pf.token, downloads.len()
             )));
 
             // Reply with PierceFirewall so the peer knows the handshake is
@@ -450,12 +493,12 @@ async fn handle_inbound(
             init_conn.send_raw(&reply.encode()).await?;
 
             let mut peer_conn = init_conn.into_peer_connection();
-            if let Some(dl) = dl {
-                let _ = download_p_session(
-                    &mut peer_conn, dl, &by_transfer, &ui_tx,
-                ).await;
-            } else {
+            if downloads.is_empty() {
                 read_search_results(&mut peer_conn, &peer_tx).await;
+            } else {
+                let _ = download_p_session(
+                    &mut peer_conn, downloads, &by_transfer, &ui_tx,
+                ).await;
             }
         }
     }
@@ -469,7 +512,6 @@ async fn handle_inbound(
 async fn outbound_p_connect(
     addr: SocketAddr,
     peer_username: &str,
-    dl: Option<PendingDownload>,
     peer_tx: UnboundedSender<FileSearchResponse>,
     by_username: ByUsername,
     by_transfer: ByTransferToken,
@@ -491,23 +533,21 @@ async fn outbound_p_connect(
 
     let mut peer_conn = init_conn.into_peer_connection();
 
-    // Use the provided dl, or re-check by_username in case CTP arrived
-    // before we got a chance to look it up.
-    let dl = dl.or_else(|| {
-        // This closure can't be async, so we can't lock here; the caller
-        // already looked it up for us.
-        None
-    });
+    // Atomically drain the entire download queue for this peer so that no
+    // other concurrently spawned task can steal entries.
+    let downloads = by_username.lock().await
+        .remove(peer_username)
+        .unwrap_or_default();
 
-    if let Some(dl) = dl {
-        let _ = ui_tx.send(AppEvent::Log(format!(
-            "Outbound P connected to {peer_username}, sending QueueUpload"
-        )));
-        // Remove from by_username so duplicate CTP messages don't re-trigger.
-        by_username.lock().await.remove(peer_username);
-        let _ = download_p_session(&mut peer_conn, dl, &by_transfer, &ui_tx).await;
-    } else {
+    let _ = ui_tx.send(AppEvent::Log(format!(
+        "Outbound P connected to {peer_username}, drained {} download(s) from queue",
+        downloads.len()
+    )));
+
+    if downloads.is_empty() {
         read_search_results(&mut peer_conn, &peer_tx).await;
+    } else {
+        let _ = download_p_session(&mut peer_conn, downloads, &by_transfer, &ui_tx).await;
     }
 
     let _ = download_dir;
@@ -547,79 +587,106 @@ async fn outbound_f_connect(
 }
 
 // ── Download P-session: QueueUpload → TransferRequest → TransferResponse ──────
+//
+// Sends QueueUpload for every pending download up front, then dispatches
+// TransferRequest messages by matching the filename so that a single
+// P-connection covers all queued files from this peer.
 
 async fn download_p_session(
     peer_conn: &mut PeerConnection,
-    dl: PendingDownload,
+    downloads: Vec<PendingDownload>,
     by_transfer: &ByTransferToken,
     ui_tx: &UnboundedSender<AppEvent>,
 ) -> anyhow::Result<()> {
-    // Step 1: request the file.
-    let qu = QueueUpload { filename: dl.filename.clone() };
-    peer_conn.send_raw(&qu.encode()).await?;
-    let _ = ui_tx.send(AppEvent::Log(format!("QueueUpload sent: '{}'", dl.filename)));
+    // Send QueueUpload for every file at once.
+    for dl in &downloads {
+        let qu = QueueUpload { filename: dl.filename.clone() };
+        peer_conn.send_raw(&qu.encode()).await?;
+        let _ = ui_tx.send(AppEvent::Log(format!("QueueUpload sent: '{}'", dl.filename)));
+    }
 
-    // Step 2: read messages until we get TransferRequest or a denial.
+    // Build a lookup map so we can match TransferRequest/UploadDenied by filename.
+    let mut by_filename: HashMap<String, PendingDownload> = downloads
+        .into_iter()
+        .map(|dl| (dl.filename.clone(), dl))
+        .collect();
+
+    // Read messages until the peer closes the connection or all files are handled.
     loop {
+        if by_filename.is_empty() {
+            break;
+        }
+
         match peer_conn.recv().await {
             Ok(PeerMessage::PlaceInQueueResponse(piq)) => {
-                let _ = ui_tx.send(AppEvent::QueuePosition {
-                    id: dl.id,
-                    position: piq.place,
-                });
-                let _ = ui_tx.send(AppEvent::Log(format!(
-                    "Queue position for '{}': {}",
-                    dl.filename, piq.place
-                )));
+                // Match against a known filename; fall back to the first entry.
+                let dl = by_filename.get(&piq.filename)
+                    .or_else(|| by_filename.values().next());
+                if let Some(dl) = dl {
+                    let _ = ui_tx.send(AppEvent::QueuePosition {
+                        id: dl.id,
+                        position: piq.place,
+                    });
+                    let _ = ui_tx.send(AppEvent::Log(format!(
+                        "Queue position for '{}': {}",
+                        piq.filename, piq.place
+                    )));
+                }
             }
 
             Ok(PeerMessage::TransferRequest(req))
                 if req.direction == TransferDirection::Upload =>
             {
                 let transfer_token = req.token;
-                let file_size = req.file_size.unwrap_or(dl.size);
 
-                // Step 3: accept the transfer.
+                // Match by filename, falling back to first entry if not found.
+                let dl = by_filename.remove(&req.filename)
+                    .or_else(|| by_filename.keys().next().cloned().and_then(|k| by_filename.remove(&k)));
+
+                let Some(dl) = dl else {
+                    // Unknown transfer; accept anyway so the connection stays alive.
+                    let resp = TransferResponse::UploadAllowed { token: transfer_token };
+                    let _ = peer_conn.send_raw(&resp.encode()).await;
+                    continue;
+                };
+
+                let file_size = req.file_size.unwrap_or(dl.size);
                 let resp = TransferResponse::UploadAllowed { token: transfer_token };
                 peer_conn.send_raw(&resp.encode()).await?;
 
                 let _ = ui_tx.send(AppEvent::Log(format!(
-                    "TransferRequest accepted (token={transfer_token}), waiting for F connection…"
+                    "TransferRequest accepted (token={transfer_token}) for '{}', waiting for F connection…",
+                    dl.filename
                 )));
 
-                // Register under the peer's transfer token so the inbound
-                // F-connection handler can find this download.
                 by_transfer.lock().await.insert(
                     transfer_token,
                     PendingDownload {
                         id: dl.id,
+                        username: dl.username.clone(),
                         filename: dl.filename.clone(),
                         size: file_size,
                     },
                 );
-                // Keep reading to hold the P-connection alive while the
-                // F-connection streams the file.  The peer will close this
-                // connection when the transfer is done (or on error).
             }
 
             Ok(PeerMessage::UploadDenied(d)) => {
-                let _ = ui_tx.send(AppEvent::TransferDenied {
-                    id: dl.id,
-                    reason: d.reason.clone(),
-                });
-                let _ = ui_tx.send(AppEvent::Log(format!(
-                    "Upload denied for '{}': {}",
-                    dl.filename, d.reason
-                )));
-                break;
+                if let Some(dl) = by_filename.remove(&d.filename).or_else(|| {
+                    by_filename.keys().next().cloned().and_then(|k| by_filename.remove(&k))
+                }) {
+                    let _ = ui_tx.send(AppEvent::TransferDenied {
+                        id: dl.id,
+                        reason: d.reason.clone(),
+                    });
+                    let _ = ui_tx.send(AppEvent::Log(format!(
+                        "Upload denied for '{}': {}",
+                        dl.filename, d.reason
+                    )));
+                }
             }
 
             Ok(_) => {}
-            Err(_) => {
-                // Peer closed the P-connection — expected after the
-                // transfer handshake is done.
-                break;
-            }
+            Err(_) => break,
         }
     }
 
