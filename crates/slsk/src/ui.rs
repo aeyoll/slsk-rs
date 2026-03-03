@@ -12,6 +12,11 @@ use ratatui::{
 use crate::app::{ActiveTab, App, DownloadStatus, LoginStatus, SearchInputMode};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    if app.log_fullscreen {
+        render_log(frame, app, frame.area());
+        return;
+    }
+
     let [tabs_area, content_area, log_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Fill(1),
@@ -48,6 +53,8 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
                     Line::from(vec![
                         " Tab ".into(),
                         "◄►".cyan().bold(),
+                        "  Log ".into(),
+                        "l".cyan().bold(),
                         "  Quit ".into(),
                         "q".cyan().bold(),
                         " ".into(),
@@ -378,12 +385,23 @@ fn render_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|msg| Line::from(Span::raw(msg.as_str())))
         .collect();
 
+    let (border_style, title) = if app.log_focused {
+        let label = if app.log_fullscreen {
+            " Log  [focused]  f: exit fullscreen  l: unfocus "
+        } else {
+            " Log  [focused]  f: fullscreen  l: unfocus "
+        };
+        (Style::default().fg(Color::Cyan), label)
+    } else {
+        (Style::default().fg(Color::DarkGray), " Log ")
+    };
+
     let log = Paragraph::new(Text::from(visible))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Log ")
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .title(title)
+                .border_style(border_style),
         )
         .wrap(Wrap { trim: false });
 

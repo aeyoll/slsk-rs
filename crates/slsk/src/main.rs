@@ -172,10 +172,22 @@ fn handle_global_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> 
             return true;
         }
 
-        KeyCode::Tab => {
+        // Toggle log pane focus.
+        KeyCode::Char('l') | KeyCode::Char('L') => {
+            app.toggle_log_focus();
+        }
+
+        // When the log pane is focused, intercept navigation keys for scrolling.
+        KeyCode::Down | KeyCode::Char('j') if app.log_focused => app.log_scroll_up(),
+        KeyCode::Up | KeyCode::Char('k') if app.log_focused => app.log_scroll_down(),
+        KeyCode::Char('f') | KeyCode::Char('F') if app.log_focused => {
+            app.toggle_log_fullscreen();
+        }
+
+        KeyCode::Tab if !app.log_focused => {
             app.active_tab = app.active_tab.next();
         }
-        KeyCode::BackTab => {
+        KeyCode::BackTab if !app.log_focused => {
             app.active_tab = app.active_tab.previous();
         }
 

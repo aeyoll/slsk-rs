@@ -144,6 +144,8 @@ pub struct App {
     // Log pane
     pub log_messages: Vec<String>,
     pub log_scroll: u16,
+    pub log_focused: bool,
+    pub log_fullscreen: bool,
 }
 
 impl App {
@@ -174,6 +176,8 @@ impl App {
                 "Connecting to the Soulseek network…".into(),
             ],
             log_scroll: 0,
+            log_focused: false,
+            log_fullscreen: false,
         }
     }
 
@@ -370,5 +374,18 @@ impl App {
 
     pub fn log_scroll_up(&mut self) {
         self.log_scroll = self.log_scroll.saturating_sub(1);
+    }
+
+    pub fn toggle_log_focus(&mut self) {
+        self.log_focused = !self.log_focused;
+        if !self.log_focused {
+            self.log_fullscreen = false;
+        }
+    }
+
+    pub fn toggle_log_fullscreen(&mut self) {
+        if self.log_focused {
+            self.log_fullscreen = !self.log_fullscreen;
+        }
     }
 }
